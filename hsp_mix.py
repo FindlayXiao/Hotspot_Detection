@@ -17,19 +17,17 @@ import warnings
 warnings.filterwarnings('ignore')
 
 #============ Read Config File ============#
-num = '2'
+num = '4'
 alpha = int(sys.argv[1])/10
+#ts_th = int(sys.argv[2])/10
 #alpha = 0.5
 #pool_size_upper = int(sys.argv[1])
 pool_size_upper = 90
 additional_instance_per_iter = 30
 
-#Prob1 / Post Prob
-method = 'Post Prob'
-#PCA / logits
-method_low_dim = 'logits'
-#biselect / select
-method_select = 'select'
+method = 'Prob1'
+method_low_dim = 'None'
+method_select = 'select_1'
 
 infile = cp.ConfigParser()
 infile.read("config/cfg"+num+"gmm.ini")
@@ -185,13 +183,14 @@ for siter in range(sample_iters):
     print(("STEP[%g/%g] %s: STAT | Principle Component Analysis")%(siter, sample_iters,datetime.now()))
     #nc = min(190, len(test_feature))
     
+
     nc = 80
     pca1 = PCA(n_components=nc)
     pca2 = PCA(n_components=nc)
     pca1.fit(test_feature)
     pca2.fit(train_feature)
-    test_feature = pca1.transform(test_feature)
-    train_feature = pca2.transform(train_feature)
+    test_pca = pca1.transform(test_feature)
+    train_pca = pca2.transform(train_feature)
     
     if method == 'Prob1':
         print(("STEP[%g/%g] %s: STAT | Querying Feature Vectors and Uncertainty Posterior")%(siter, sample_iters,datetime.now()))
@@ -201,17 +200,17 @@ for siter in range(sample_iters):
 
     elif method == 'Post Prob':
         print(("STEP[%g/%g] %s: STAT | Querying Post Probability")%(siter, sample_iters,datetime.now()))
-        mean = np.mean(test_feature, axis=0)
-        sigma= np.cov(test_feature.T)
-        post_prob = mn.pdf(test_feature, mean=mean, cov=sigma)
+        mean = np.mean(test_pca, axis=0)
+        sigma= np.cov(test_pca.T)
+        post_prob = mn.pdf(test_pca, mean=mean, cov=sigma)
         index1 = post_prob.argsort()[:pool_size_per_iter]
 
     print(("STEP[%g/%g] %s: STAT | Computing Trust Score")%(siter, sample_iters,datetime.now()))
     if method_low_dim == 'PCA':
         pdt = sess.run(y, feed_dict={x_data: test_tmp[index1][:,:,:fealen]})
         trust_model = TrustScore(k=10, alpha=alpha, filtering="density")
-        trust_model.fit(train_feature, train_label)
-        trust_score = trust_model.get_score(test_feature[index1], pdt)
+        trust_model.fit(train_pca, train_label)
+        trust_score = trust_model.get_score(test_pca[index1], pdt)
 
     elif method_low_dim == 'logits':
         test_logits = sess.run(predict, feed_dict={x_data: test_tmp[index1][:,:,:fealen]})
@@ -221,16 +220,31 @@ for siter in range(sample_iters):
         trust_model.fit(train_logits, train_label)
         trust_score = trust_model.get_score(test_logits, pdt)
 
-    if method_select == 'biselect':
+    elif method_low_dim == 'None':
+        pdt = sess.run(y, feed_dict={x_data: test_tmp[index1][:,:,:fealen]})
+        trust_model= TrustScore(k=10, alpha=alpha, filtering="density")
+        trust_model.fit(train_feature, train_label)
+        trust_score = trust_model.get_score(test_feature[index1], pdt)
+
+    if method_select == 'select_1':
+        idx_min_ts = trust_score.argsort()[0:additional_instance_per_iter]
+
+    elif method_select == 'select_2':
         idx0 = np.where(pdt == 0)[0]
         idx1 = np.where(pdt == 1)[0]
-        idx_s0 = np.where(trust_score[idx0] < 1.1)[0]
-        idx_s1 = np.where(trust_score[idx1] > 0.9)[0]
+        idx_s0 = np.where(trust_score[idx0] < 1.5)[0]
+        idx_s1 = np.where(trust_score[idx1] > 2/3)[0]
         idx_min_ts = np.concatenate((idx0[idx_s0], idx1[idx_s1]), axis=0)
 
-    elif method_select == 'select':
-        idx_min_ts = trust_score.argsort()[0:additional_instance_per_iter]
-        #idx_min_ts = np.where(ts < ts_th)
+    elif method_select == 'select_3':
+        idx0 = np.where(pdt == 0)[0]
+        idx1 = np.where(pdt == 1)[0]
+        idx_s0 = trust_score[idx0].argsort()[0:additional_instance_per_iter-len(idx1)]
+        idx_min_ts = np.concatenate((idx0[idx_s0], idx1), axis=0)
+
+    elif method_select == 'select_4':
+        idx_min_ts = np.where(trust_score < 1 + ts_th)
+
 
     mask0=np.ones(len(index1), dtype=bool)
     mask0[idx_min_ts]=False
@@ -331,9 +345,10 @@ for siter in range(sample_iters):
 
 sess.close()
 
-fn = open("mix4.txt",'a')
-#fn.write("ts_th:\t"+str(ts_th)+"\n")
+fn = open("result/"+method+"_"+method_low_dim+"_"+method_select+"_data"+num+".txt",'a')
 fn.write(method+"\t"+method_low_dim+"\t"+method_select+"\n")
+if method_select == 'select_4':
+    fn.write("trustscore thereshold:\t"+str(1+ts_th)+"\n")
 fn.write("alpha:\t"+str(alpha)+"\n")
 fn.write("select:\t"+str(pool_size_per_iter)+"\t"+str(additional_instance_per_iter)+"\n")
 fn.write("acc:\t"+str(acc_reg)+"\n")
